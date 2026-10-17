@@ -15,8 +15,13 @@ class StorageBuckets {
   static const int maxCardMediaBytes = 25 * 1024 * 1024; // 25 MiB
   static const int maxAnkiApkgBytes = 50 * 1024 * 1024; // 50 MiB
   static const int maxImportDeckBytes = 15 * 1024 * 1024; // 15 MiB
+  static const int userTotalQuotaBytes = 250 * 1024 * 1024; // 250 MiB
   static const int signedUrlTtlSeconds = 30 * 60; // 30 minutos
   static const int signedUrlRenewBeforeSeconds = 60; // renova faltando 60s
+
+  static const int cardMediaMaxFileBytes = maxCardMediaBytes;
+  static const int ankiTransferMaxFileBytes = maxAnkiApkgBytes;
+  static const int signedUrlExpirySeconds = signedUrlTtlSeconds;
 
   static const List<String> allowedMediaMimeTypes = [
     'image/jpeg',
@@ -35,7 +40,29 @@ class StorageBuckets {
     'video/quicktime',
   ];
 
+  static List<String> get allowedCardMediaMimeTypes => allowedMediaMimeTypes;
+
   static List<String> get allowedOcclusionImageMimeTypes => allowedMediaMimeTypes
       .where((mime) => mime.startsWith('image/'))
       .toList(growable: false);
+
+  static String sanitizeFileName(String raw) {
+    return raw.trim().replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_');
+  }
+
+  static String buildCardMediaPath(
+    String userId,
+    String cardId,
+    String fileName,
+  ) {
+    return '$userId/$cardId/${sanitizeFileName(fileName)}';
+  }
+
+  static String buildAnkiTransferPath(
+    String userId,
+    String jobId,
+    String fileName,
+  ) {
+    return '$userId/$jobId/${sanitizeFileName(fileName)}';
+  }
 }

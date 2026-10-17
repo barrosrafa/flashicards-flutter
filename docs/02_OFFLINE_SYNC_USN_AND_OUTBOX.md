@@ -84,3 +84,26 @@ Implementada em [`lib/data/local/outbox_queue.dart`](file:///Users/rafaelapareci
    Múltiplas chamadas de confirmação de XP para a mesma sessão de estudo (`p_session_id`) são fundidas em uma única operação RPC na fila.
 3. **Adiamento por Dependência (`Session XP Deferral`):**
    A RPC `sync_session_xp_confirmed` valida no PostgreSQL os `review_logs` já persistidos para aquela sessão. Portanto, se qualquer item de `review_logs` com o mesmo `session_id` ainda estiver pendente ou tiver falhado na passagem atual da `OutboxQueue`, a execução de `sync_session_xp_confirmed` é **automaticamente adiada** para o próximo ciclo de sync, evitando perda de XP.
+
+---
+
+## 4. Resiliência de Rede e Política de Retentativas da `OutboxQueue`
+
+Para evitar que falhas temporárias de conexão (offline, avião, túnel) inflem artificialmente o contador `retry_count` de uma mutação e a enviem indevidamente para quarentena (dead-letter queue com `retry_count >= 5`):
+1. **Detecção de Erro de Conexão (`_isNetworkOfflineError`):**
+   Erros do tipo `SocketException`, `ClientException`, timeouts de conexão ou padrões `network is unreachable` são identificados como falhas de infraestrutura. Nessas situações, o item da Outbox é mantido como pendente e seu `retry_count` **não** é incrementado.
+2. **Método `retryFailedOperations()`:**
+   Permite ao usuário ou ao `SyncStatusOrbPanel` forçar a retentativa de todas as operações marcadas como falhas (`retry_count >= 5`), resetando os contadores para nova tentativa imediata.
+3. **Métricas Observáveis:**
+   Exposição das propriedades `pendingCount` e `failedCount` para alimentar os indicadores visuais de sincronização.
+
+---
+
+## 5. Degradação de Persistência e Tombstones no SQLite
+
+1. **Flag `isPersistenceDegraded`:**
+   Caso a inicialização do SQLite via `sqflite` falhe (ex.: permissão de I/O em diretórios protegidos do sistema), o banco entra automaticamente em modo em memória fallback, ativando `isPersistenceDegraded = true` e reportando advertência no `ObservabilityService` para alertar o usuário sem fechar o app bruscamente.
+2. **Expurgo Seguro por Usuário (`clearUserDataForUser`):**
+   No logout ou troca de conta, limpa as tabelas com filtro `user_id == currentUserId`, impedindo vazamento de dados entre usuários no mesmo aparelho.
+3. **Tombstones e Cascata de Deleção:**
+   Ao receber deltas remotos com `deleted_at != null`, o `SyncEngine` não apenas remove o registro pai, mas também cascateia a exclusão de filhos relacionados (por exemplo, deletar um baralho exclui localmente suas notas e cartões associados).

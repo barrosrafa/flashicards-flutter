@@ -45,7 +45,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
     });
 
     try {
-      await ServiceLocator.instance.authRepository.signUp(
+      final SignUpOutcome outcome =
+          await ServiceLocator.instance.authRepository.signUp(
         email: _emailController.text,
         password: _passwordController.text,
         displayName: _nameController.text,
@@ -53,7 +54,19 @@ class _RegisterScreenState extends State<RegisterScreen> {
       if (!mounted) {
         return;
       }
-      context.go('/onboarding');
+      if (outcome.requiresEmailConfirmation) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Conta criada! Verifique seu e-mail para confirmar seu cadastro antes de entrar.',
+            ),
+            duration: Duration(seconds: 5),
+          ),
+        );
+        context.go('/login');
+      } else {
+        context.go('/onboarding');
+      }
     } catch (e) {
       setState(() {
         _errorMessage = e.toString();

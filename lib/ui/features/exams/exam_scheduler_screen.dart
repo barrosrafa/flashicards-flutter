@@ -118,6 +118,58 @@ class _ExamSchedulerScreenState extends State<ExamSchedulerScreen> {
                 label: 'Nome da Prova / Exame',
                 controller: _titleController,
               ),
+              if (_decks.isNotEmpty) ...<Widget>[
+                const SizedBox(height: 14),
+                Text(
+                  'Baralho Alvo',
+                  style: FlashiTypography.monoMetric(
+                    color: colors.textSecondary,
+                    fontSize: 12,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                DropdownButtonFormField<String>(
+                  value: _selectedDeckId,
+                  dropdownColor: colors.surfacePanel,
+                  style: TextStyle(color: colors.textPrimary, fontSize: 14),
+                  decoration: InputDecoration(
+                    filled: true,
+                    fillColor: colors.surfaceInput,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide(color: colors.borderSpecular),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide(color: colors.borderSpecular),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide(color: colors.accentCyan),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                  ),
+                  items: _decks
+                      .map(
+                        (Deck d) => DropdownMenuItem<String>(
+                          value: d.id,
+                          child: Text(
+                            d.title.isEmpty ? 'Sem título' : d.title,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (String? val) {
+                    setState(() {
+                      _selectedDeckId = val;
+                    });
+                  },
+                ),
+              ],
               const SizedBox(height: 14),
               Text(
                 'Dias ate a prova: $_daysFromNow dias',

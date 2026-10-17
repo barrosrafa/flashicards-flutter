@@ -4,6 +4,7 @@ import '../../core/constants/storage_buckets.dart';
 import '../../core/utils/crypto_utils.dart';
 import '../../domain/models/occlusion_mask.dart';
 import '../local/app_database.dart';
+import '../local/outbox_queue.dart';
 import '../remote/supabase_client_provider.dart';
 
 /// Repository for staging image occlusion assets and creating 1-card-per-mask
@@ -14,11 +15,14 @@ class OcclusionRepository {
   OcclusionRepository({
     FlashiLocalDatabase? database,
     SupabaseClientProvider? supabaseProvider,
+    OutboxQueue? outboxQueue,
   })  : _database = database ?? FlashiLocalDatabase.instance,
-        _supabaseProvider = supabaseProvider ?? SupabaseClientProvider.instance;
+        _supabaseProvider = supabaseProvider ?? SupabaseClientProvider.instance,
+        _outboxQueue = outboxQueue ?? OutboxQueue();
 
   final FlashiLocalDatabase _database;
   final SupabaseClientProvider _supabaseProvider;
+  final OutboxQueue _outboxQueue;
 
   Future<OcclusionCreationResult> createImageOcclusionNote({
     required String userId,
@@ -39,9 +43,9 @@ class OcclusionRepository {
     final String ext = fileName.contains('.')
         ? fileName.split('.').last.toLowerCase()
         : 'png';
-    final String storagePath =
-        '$userId/occlusion/$assetId.$ext';
+    final String storagePath = '$userId/occlusion/$assetId.$ext';
     final String nowIso = DateTime.now().toUtc().toIso8601String();
+    bool remoteSucceeded = false;
 
     final client = _supabaseProvider.client;
     if (client != null) {
@@ -70,14 +74,17 @@ class OcclusionRepository {
           },
         );
         if (rpcResult is Map<String, dynamic>) {
+          remoteSucceeded = true;
           return OcclusionCreationResult.fromJson(rpcResult);
         }
-      } catch (_) {}
+      } catch (_) {
+        remoteSucceeded = false;
+      }
     }
 
     // Local persistence for immediate offline study
     final List<String> cardIds = <String>[];
-    await _database.upsertRow('notes', <String, dynamic>{
+    final Map<String, dynamic> notePayload = <String, dynamic>{
       'id': noteId,
       'user_id': userId,
       'deck_id': deckId,
@@ -89,7 +96,16 @@ class OcclusionRepository {
       },
       'created_at': nowIso,
       'updated_at': nowIso,
-    });
+    };
+    await _database.upsertRow('notes', notePayload);
+
+    if (!remoteSucceeded) {
+      await _outboxQueue.enqueueMutation(
+        tableName: 'notes',
+        action: 'insert',
+        payload: notePayload,
+      );
+    }
 
     for (int i = 0; i < masks.length; i++) {
       final OcclusionMask mask = masks[i];
@@ -97,7 +113,7 @@ class OcclusionRepository {
       cardIds.add(cardId);
 
       await _database.upsertRow('note_image_occlusion_boxes', <String, dynamic>{
-        'id': mask.id,
+        'id': mask.id ?? CryptoUtils.generateUuidV4(),
         'note_id': noteId,
         'user_id': userId,
         'box_index': i + 1,
@@ -109,7 +125,7 @@ class OcclusionRepository {
         'created_at': nowIso,
       });
 
-      await _database.upsertRow('cards', <String, dynamic>{
+      final Map<String, dynamic> cardPayload = <String, dynamic>{
         'id': cardId,
         'deck_id': deckId,
         'user_id': userId,
@@ -131,9 +147,11 @@ class OcclusionRepository {
         'position': i,
         'created_at': nowIso,
         'updated_at': nowIso,
-      });
+      };
 
-      await _database.upsertRow('card_learning_state', <String, dynamic>{
+      await _database.upsertRow('cards', cardPayload);
+
+      final Map<String, dynamic> learningStatePayload = <String, dynamic>{
         'user_id': userId,
         'card_id': cardId,
         'state': 'new',
@@ -145,12 +163,25 @@ class OcclusionRepository {
         'reps': 0,
         'lapses': 0,
         'updated_at': nowIso,
-      });
+      };
+
+      await _database.upsertRow('card_learning_state', learningStatePayload);
+
+      if (!remoteSucceeded) {
+        await _outboxQueue.enqueueMutation(
+          tableName: 'cards',
+          action: 'insert',
+          payload: cardPayload,
+        );
+      }
     }
 
     return OcclusionCreationResult(
       noteId: noteId,
       cardIds: cardIds,
+      masks: masks,
+      deckId: deckId,
+      status: 'completed',
     );
   }
 }

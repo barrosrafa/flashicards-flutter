@@ -2,6 +2,7 @@ import '../../core/utils/crypto_utils.dart';
 import '../../domain/models/learning_preferences.dart';
 import '../../domain/models/note.dart';
 import '../local/app_database.dart';
+import '../local/outbox_queue.dart';
 import '../remote/supabase_client_provider.dart';
 import 'note_repository.dart';
 
@@ -13,13 +14,16 @@ class OnboardingRepository {
     FlashiLocalDatabase? database,
     SupabaseClientProvider? supabaseProvider,
     NoteRepository? noteRepository,
+    OutboxQueue? outboxQueue,
   })  : _database = database ?? FlashiLocalDatabase.instance,
         _supabaseProvider = supabaseProvider ?? SupabaseClientProvider.instance,
-        _noteRepository = noteRepository ?? NoteRepository();
+        _noteRepository = noteRepository ?? NoteRepository(),
+        _outboxQueue = outboxQueue ?? OutboxQueue();
 
   final FlashiLocalDatabase _database;
   final SupabaseClientProvider _supabaseProvider;
   final NoteRepository _noteRepository;
+  final OutboxQueue _outboxQueue;
 
   Future<OnboardingState> getOnboardingState(String userId) async {
     final Map<String, dynamic>? localProfile =
@@ -76,15 +80,23 @@ class OnboardingRepository {
     required String userId,
     required LearningPreferences preferences,
   }) async {
+    // Idempotency check: don't create duplicate starter decks if already activated
+    final OnboardingState existingState = await getOnboardingState(userId);
+    if (existingState.onboardingCompleted && existingState.starterDeckId != null) {
+      return ActivationResult(
+        deckId: existingState.starterDeckId!,
+        createdStarterDeck: false,
+      );
+    }
+
     final int newLimit = dailyMinutesToNewCardsLimit(preferences.dailyMinutes);
-    final int reviewLimit =
-        dailyMinutesToReviewsLimit(preferences.dailyMinutes);
-    final LearningDraft draft =
-        starterDraftByGoal[preferences.goal] ??
-            starterDraftByGoal[LearningGoal.vestibular]!;
+    final int reviewLimit = dailyMinutesToReviewsLimit(preferences.dailyMinutes);
+    final LearningDraft draft = starterDraftByGoal[preferences.goal] ??
+        starterDraftByGoal[LearningGoal.vestibular]!;
 
     final String nowIso = DateTime.now().toUtc().toIso8601String();
     String deckId = CryptoUtils.generateUuidV4();
+    bool remoteSucceeded = false;
 
     final client = _supabaseProvider.client;
     if (client != null) {
@@ -116,11 +128,13 @@ class OnboardingRepository {
           'onboarding_completed': true,
           'updated_at': nowIso,
         });
-      } catch (_) {}
+        remoteSucceeded = true;
+      } catch (_) {
+        remoteSucceeded = false;
+      }
     }
 
-    // Persist locally for immediate offline availability
-    await _database.upsertRow('decks', <String, dynamic>{
+    final Map<String, dynamic> deckPayload = <String, dynamic>{
       'id': deckId,
       'user_id': userId,
       'title': draft.title,
@@ -131,9 +145,9 @@ class OnboardingRepository {
       'position': 0,
       'created_at': nowIso,
       'updated_at': nowIso,
-    });
+    };
 
-    await _database.upsertRow('study_settings', <String, dynamic>{
+    final Map<String, dynamic> studySettingsPayload = <String, dynamic>{
       'user_id': userId,
       'daily_new_cards_limit': newLimit,
       'daily_reviews_limit': reviewLimit,
@@ -144,9 +158,9 @@ class OnboardingRepository {
       'show_next_intervals': true,
       'enable_keyboard_shortcuts': true,
       'updated_at': nowIso,
-    });
+    };
 
-    await _database.upsertRow('profiles', <String, dynamic>{
+    final Map<String, dynamic> profilePayload = <String, dynamic>{
       'id': userId,
       'display_name': 'Estudante Flashi',
       'locale': 'pt-BR',
@@ -154,7 +168,31 @@ class OnboardingRepository {
       'theme': 'dark',
       'onboarding_completed': true,
       'updated_at': nowIso,
-    });
+    };
+
+    // Persist locally for immediate offline availability
+    await _database.upsertRow('decks', deckPayload);
+    await _database.upsertRow('study_settings', studySettingsPayload);
+    await _database.upsertRow('profiles', profilePayload);
+
+    // If remote failed or is offline, enqueue in outbox for eventual consistency
+    if (!remoteSucceeded) {
+      await _outboxQueue.enqueueMutation(
+        tableName: 'decks',
+        action: 'insert',
+        payload: deckPayload,
+      );
+      await _outboxQueue.enqueueMutation(
+        tableName: 'study_settings',
+        action: 'upsert',
+        payload: studySettingsPayload,
+      );
+      await _outboxQueue.enqueueMutation(
+        tableName: 'profiles',
+        action: 'upsert',
+        payload: profilePayload,
+      );
+    }
 
     for (final StarterCardDraft card in draft.cards) {
       await _noteRepository.createNote(

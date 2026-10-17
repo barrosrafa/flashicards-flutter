@@ -1,10 +1,19 @@
 import 'package:flutter/foundation.dart';
 
+import '../../core/errors/app_exceptions.dart';
 import '../remote/edge_function_client.dart';
 import '../remote/supabase_client_provider.dart';
 import 'app_database.dart';
 import 'outbox_queue.dart';
 import 'tables/sync_tables.dart';
+
+enum SyncStatusState {
+  idle,
+  syncing,
+  success,
+  failed,
+  rateLimited,
+}
 
 /// Monotonic USN (`BigInt`) delta synchronization engine for all 28 Flashi tables.
 ///
@@ -13,6 +22,7 @@ import 'tables/sync_tables.dart';
 /// 2. Pulls delta changes from the `sync-pull` Edge Function using `since_usn`.
 /// 3. Compares `BigInt` USN values (`recordUsn <= existingUsn` is skipped) to guarantee
 ///    monotonic conflict resolution.
+/// 4. Handles tombstones (`deleted_at != null`) and pagination up to 50 delta pages.
 class SyncEngine extends ChangeNotifier {
   SyncEngine({
     FlashiLocalDatabase? database,
@@ -30,14 +40,18 @@ class SyncEngine extends ChangeNotifier {
   final SupabaseClientProvider _supabaseProvider;
 
   bool _isSyncing = false;
+  SyncStatusState _statusState = SyncStatusState.idle;
   BigInt _lastUsn = BigInt.zero;
   DateTime? _lastSyncedAt;
   String? _lastSyncError;
+  int? _retryAfterSeconds;
 
   bool get isSyncing => _isSyncing;
+  SyncStatusState get statusState => _statusState;
   BigInt get lastUsn => _lastUsn;
   DateTime? get lastSyncedAt => _lastSyncedAt;
   String? get lastSyncError => _lastSyncError;
+  int? get retryAfterSeconds => _retryAfterSeconds;
   OutboxQueue get outboxQueue => _outboxQueue;
 
   static const String _lastUsnMetaKey = 'last_usn';
@@ -49,6 +63,13 @@ class SyncEngine extends ChangeNotifier {
       return BigInt.zero;
     }
     return BigInt.tryParse(stored) ?? BigInt.zero;
+  }
+
+  /// Sets persisted `last_usn` cursor manually (useful for testing or initial sync reset).
+  Future<void> setLastUsn(BigInt usn) async {
+    _lastUsn = usn;
+    await _database.setSyncMeta(_lastUsnMetaKey, usn.toString());
+    notifyListeners();
   }
 
   /// Applies a batch of table changes from `sync-pull` with `BigInt` USN comparison.
@@ -106,7 +127,9 @@ class SyncEngine extends ChangeNotifier {
       return;
     }
     _isSyncing = true;
+    _statusState = SyncStatusState.syncing;
     _lastSyncError = null;
+    _retryAfterSeconds = null;
     notifyListeners();
 
     try {
@@ -117,14 +140,16 @@ class SyncEngine extends ChangeNotifier {
       if (!_supabaseProvider.isAvailable) {
         _lastUsn = await getLastUsn();
         _lastSyncedAt = DateTime.now();
+        _statusState = SyncStatusState.success;
         return;
       }
 
       BigInt currentUsn = await getLastUsn();
       bool hasMore = true;
       int safetyPages = 0;
+      const int maxSafetyPages = 50;
 
-      while (hasMore && safetyPages < 10) {
+      while (hasMore && safetyPages < maxSafetyPages) {
         safetyPages++;
         final Map<String, dynamic> response = await _edgeClient.invoke(
           'sync-pull',
@@ -167,7 +192,13 @@ class SyncEngine extends ChangeNotifier {
 
       _lastUsn = currentUsn;
       _lastSyncedAt = DateTime.now();
+      _statusState = SyncStatusState.success;
+    } on RateLimitException catch (e) {
+      _statusState = SyncStatusState.rateLimited;
+      _retryAfterSeconds = e.retryAfterSeconds;
+      _lastSyncError = e.message;
     } catch (error) {
+      _statusState = SyncStatusState.failed;
       _lastSyncError = error.toString();
     } finally {
       _isSyncing = false;
@@ -191,9 +222,9 @@ class SyncEngine extends ChangeNotifier {
         params: <String, dynamic>{
           'p_card_id': payload['card_id'],
           'p_rating': payload['rating'],
-          'p_duration_ms': payload['review_duration_ms'],
+          'p_duration_ms': payload['review_duration_ms'] ?? payload['duration_ms'] ?? 0,
           'p_idempotency_key': payload['idempotency_key'],
-          'p_reviewed_at': payload['reviewed_at'],
+          'p_reviewed_at': payload['reviewed_at'] ?? payload['review_time'],
         },
       );
       return;

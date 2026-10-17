@@ -29,6 +29,9 @@ dependencies:
   get_it: ^8.0.2
   go_router: ^14.6.0
 
+  # Motor FSRS-6 de Repetição Espaçada
+  fsrs: ^2.0.1
+
   # Utilitários de Criptografia (SHA-256), Identificadores & Rede
   crypto: ^3.0.6
   uuid: ^4.5.1

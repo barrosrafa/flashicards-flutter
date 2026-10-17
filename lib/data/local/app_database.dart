@@ -1,8 +1,10 @@
 import 'dart:convert';
+import 'dart:developer' as developer;
 
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
+import '../../core/observability/observability_service.dart';
 import 'tables/sync_tables.dart';
 
 /// Local offline-first database for Flashi.
@@ -26,6 +28,11 @@ class FlashiLocalDatabase {
 
   final bool _inMemory;
   Database? _db;
+  bool _isPersistenceDegraded = false;
+
+  /// Retorna `true` se o banco nativo SQLite estiver indisponível e a persistência
+  /// estiver degradada operando em memória volátil.
+  bool get isPersistenceDegraded => _inMemory || _isPersistenceDegraded || _db == null;
 
   /// Fallback in-memory tables when running in unit tests or before SQLite initializes.
   final Map<String, Map<String, Map<String, dynamic>>> _memoryStore =
@@ -53,9 +60,21 @@ class FlashiLocalDatabase {
           await _createTables(db);
         },
       );
+      _isPersistenceDegraded = false;
       return _db;
-    } catch (_) {
-      // Fallback to in-memory store if native sqflite channel is unavailable.
+    } catch (err, stack) {
+      _isPersistenceDegraded = true;
+      developer.log(
+        'SQLite native storage initialization failed. Operating in degraded in-memory mode.',
+        name: 'FlashiLocalDatabase',
+        error: err,
+      );
+      ObservabilityService.instance.warn(
+        'SQLite native storage initialization failed. Operating in degraded in-memory mode.',
+        category: 'database',
+        error: err,
+        stackTrace: stack,
+      );
       return null;
     }
   }
@@ -101,7 +120,7 @@ class FlashiLocalDatabase {
     ''');
   }
 
-  /// Upserts a row into one of the 28 synchronized tables (or local auxiliary stores).
+  /// Upserts a row into one of the synchronized tables (or local auxiliary stores).
   Future<void> upsertRow(
     String tableName,
     Map<String, dynamic> row, {
@@ -413,6 +432,21 @@ class FlashiLocalDatabase {
       await db.delete('sync_records');
       await db.delete('outbox_queue');
       await db.delete('sync_meta');
+    }
+  }
+
+  /// Purges local data for a specific user ID while preserving system/shared rows.
+  Future<void> clearUserDataForUser(String userId) async {
+    _memoryStore.forEach((String table, Map<String, Map<String, dynamic>> map) {
+      map.removeWhere((_, row) => row['user_id']?.toString() == userId);
+    });
+    final Database? db = await _getDatabase();
+    if (db != null) {
+      await db.delete(
+        'sync_records',
+        where: 'user_id = ?',
+        whereArgs: <Object?>[userId],
+      );
     }
   }
 }

@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../ui/core/widgets/app_shell_navigation.dart';
 import '../../ui/features/analytics/analytics_screen.dart';
+import '../../ui/features/auth/auth_callback_screen.dart';
 import '../../ui/features/auth/forgot_password_screen.dart';
 import '../../ui/features/auth/login_screen.dart';
 import '../../ui/features/auth/register_screen.dart';
@@ -37,6 +38,24 @@ class AppRouter {
       initialLocation:
           locator.authRepository.isAuthenticated ? '/dashboard' : '/',
       refreshListenable: locator.authRepository,
+      redirect: (BuildContext context, GoRouterState state) {
+        final bool isAuth = locator.authRepository.isAuthenticated;
+        final String path = state.uri.path;
+        final bool isPublicRoute = path == '/' ||
+            path == '/login' ||
+            path == '/register' ||
+            path == '/forgot-password' ||
+            path == '/reset-password' ||
+            path == '/auth-callback';
+
+        if (!isAuth && !isPublicRoute) {
+          return '/login';
+        }
+        if (isAuth && (path == '/login' || path == '/register')) {
+          return '/dashboard';
+        }
+        return null;
+      },
       routes: <RouteBase>[
         GoRoute(
           path: '/',
@@ -62,6 +81,11 @@ class AppRouter {
           path: '/reset-password',
           builder: (BuildContext context, GoRouterState state) =>
               const ForgotPasswordScreen(isResetMode: true),
+        ),
+        GoRoute(
+          path: '/auth-callback',
+          builder: (BuildContext context, GoRouterState state) =>
+              const AuthCallbackScreen(),
         ),
         GoRoute(
           path: '/onboarding',

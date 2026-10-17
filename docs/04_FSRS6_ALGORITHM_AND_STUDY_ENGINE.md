@@ -65,3 +65,16 @@ Quando o usuário pressiona **De novo (`Again`)** durante a sessão de estudo:
 2. O [`SocraticRepository`](file:///Users/rafaelaparecido/projects/flashcards-flutter/lib/data/repositories/socratic_repository.dart) invoca a Edge Function `socratic-tutor` (ou executa o motor socrático local se offline).
 3. Em vez de simplesmente mostrar a resposta passivamente, a IA formula uma pergunta norteadora sobre a pista/princípio fundamental do cartão (`status = in_progress`).
 4. Após 2 turnos de raciocínio ativo do estudante, a sessão é marcada como `resolved` e o estudo prossegue.
+
+---
+
+## 5. Adaptador Unificado FSRS-6 (`FsrsSchedulerAdapter`)
+
+Para garantir integridade absoluta entre o que o estudante vê nos botões do dock de avaliação e o que é efetivamente gravado no banco de dados e sincronizado:
+1. **Ponto Único de Verdade Matemática:**
+   A classe [`FsrsSchedulerAdapter`](file:///Users/rafaelaparecido/projects/flashcards-flutter/lib/domain/services/fsrs_scheduler_adapter.dart) é compartilhada tanto por `StudyRepository.previewIntervals()` quanto por `StudyRepository.submitReview()`.
+2. **Formatação de Rótulos de Intervalo:**
+   - Para `Again`: `<10m` se $\le 15$ min, ou `${diff.inHours}h`.
+   - Para intervalos diários: `${scheduledDays}d` se $< 30$ dias, `${(scheduledDays / 30).round()}m` se $< 365$ dias, ou `${(scheduledDays / 365).toStringAsFixed(1)}a`.
+3. **Isolamento de Contas Demo vs. Contas Reais:**
+   O carregamento de `demoCards` como fallback silencioso na ausência de cartões foi eliminado; dados de demonstração agora são restritos de forma explícita ao `userId == 'demo-user-id'`, impedindo vazamento de cartões de exemplo em sessões de usuários reais autenticados.

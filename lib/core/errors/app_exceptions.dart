@@ -26,25 +26,43 @@ class EdgeError extends AppException {
     String message, [
     this.payload,
     String code = 'EDGE_ERROR',
+    String? requestId,
   ]) : super(
           message,
           code: code,
           status: status,
+          requestId: requestId,
         );
 
   final String functionName;
   final Object? payload;
+
+  bool get isRateLimited => status == 429 || this is RateLimitError;
+  int get retryAfterSeconds => this is RateLimitError
+      ? (this as RateLimitError).retryAfterSec
+      : 0;
+  String get endpoint => functionName;
 }
 
+typedef EdgeErrorEvent = EdgeError;
+
 class AuthRequiredError extends EdgeError {
-  const AuthRequiredError([String functionName = 'auth'])
-      : super(
+  const AuthRequiredError([
+    String functionName = 'auth',
+    String message = 'Sua sessão expirou ou você precisa entrar na sua conta.',
+  ]) : super(
           functionName,
           401,
-          'Sua sessão expirou ou você precisa entrar na sua conta.',
+          message,
           null,
           'AUTH_REQUIRED',
         );
+}
+
+class UnauthenticatedException extends AuthRequiredError {
+  const UnauthenticatedException([
+    String message = 'Sua sessão expirou ou as credenciais são inválidas.',
+  ]) : super('auth', message);
 }
 
 class EdgeTimeoutError extends EdgeError {
@@ -65,15 +83,53 @@ class RateLimitError extends EdgeError {
     String functionName,
     this.retryAfterSec, [
     Object? payload,
+    String? message,
+    String? requestId,
   ]) : super(
           functionName,
           429,
-          'Muitas solicitações para "$functionName". Aguarde ${retryAfterSec}s antes de tentar novamente.',
+          message ??
+              'Muitas solicitações para "$functionName". Aguarde ${retryAfterSec}s antes de tentar novamente.',
           payload,
           'RATE_LIMITED',
+          requestId,
         );
 
   final int retryAfterSec;
+}
+
+class RateLimitException extends RateLimitError {
+  const RateLimitException(
+    String message, {
+    required int retryAfterSeconds,
+    String endpoint = 'edge',
+    String? requestId,
+    Object? payload,
+  }) : super(
+          endpoint,
+          retryAfterSeconds,
+          payload,
+          message,
+          requestId,
+        );
+}
+
+class EdgeFunctionException extends EdgeError {
+  const EdgeFunctionException(
+    String message, {
+    String? code,
+    int statusCode = 500,
+    String? requestId,
+    String endpoint = 'edge',
+    Object? payload,
+  }) : super(
+          endpoint,
+          statusCode,
+          message,
+          payload,
+          code ?? 'EDGE_FUNCTION_ERROR',
+          requestId,
+        );
 }
 
 class UnavailableError extends EdgeError {
@@ -88,6 +144,29 @@ class UnavailableError extends EdgeError {
           payload,
           'SERVICE_UNAVAILABLE',
         );
+}
+
+class OfflinePersistenceException extends AppException {
+  const OfflinePersistenceException(
+    super.message, {
+    super.code = 'OFFLINE_PERSISTENCE_ERROR',
+    super.status = 503,
+    super.requestId,
+    super.cause,
+  });
+}
+
+class UnsyncedChangesException extends AppException {
+  const UnsyncedChangesException(
+    this.pendingCount, [
+    String message = 'Existem alterações offline pendentes.',
+  ]) : super(
+          message,
+          code: 'UNSYNCED_CHANGES',
+          status: 409,
+        );
+
+  final int pendingCount;
 }
 
 class OcclusionRpcError extends AppException {

@@ -46,6 +46,7 @@ class _StudySessionScreenState extends State<StudySessionScreen>
   int _currentIndex = 0;
   bool _isRevealed = false;
   bool _loading = true;
+  bool _isSubmitting = false;
   double _examBoostMultiplier = 1.0;
   DateTime _cardShownAt = DateTime.now();
   SessionXpResult? _xpResult;
@@ -86,7 +87,7 @@ class _StudySessionScreenState extends State<StudySessionScreen>
       return;
     }
     setState(() {
-      _queue = due.isEmpty ? demoCards : due;
+      _queue = (due.isEmpty && userId == 'demo-user-id') ? demoCards : due;
       _currentIndex = 0;
       _isRevealed = false;
       _examBoostMultiplier = boost;
@@ -108,63 +109,75 @@ class _StudySessionScreenState extends State<StudySessionScreen>
   }
 
   Future<void> _submitRating(ReviewRating rating) async {
+    if (_isSubmitting || _currentIndex >= _queue.length) {
+      return;
+    }
+    _isSubmitting = true;
     HapticsHelper.forReviewRating(rating.value);
     final ServiceLocator locator = ServiceLocator.instance;
     final DueCard card = _queue[_currentIndex];
     final int durationMs =
         DateTime.now().difference(_cardShownAt).inMilliseconds.clamp(300, 120000);
 
-    await locator.studyRepository.submitReview(
-      userId: locator.activeUserId,
-      card: card,
-      rating: rating,
-      durationMs: durationMs,
-      sessionId: _sessionId,
-      examBoostMultiplier: _examBoostMultiplier,
-    );
-    _sessionReviewKeys.add('${card.cardId}:${_sessionReviewKeys.length}');
-
-    // If user rated Again on a previously reviewed card, offer Socratic AI remediation
-    if (rating == ReviewRating.again && mounted) {
-      await showModalBottomSheet<void>(
-        context: context,
-        isScrollControlled: true,
-        backgroundColor: Colors.transparent,
-        builder: (BuildContext context) => SocraticTutorSheet(
-          cardId: card.cardId,
-          cardFront: card.front,
-          cardBack: card.back,
-        ),
-      );
-    }
-
-    if (!mounted) {
-      return;
-    }
-
-    if (_currentIndex + 1 >= _queue.length) {
-      final SessionXpResult xp =
-          await locator.gamificationRepository.syncSessionXp(
+    try {
+      await locator.studyRepository.submitReview(
         userId: locator.activeUserId,
+        card: card,
+        rating: rating,
+        durationMs: durationMs,
         sessionId: _sessionId,
-        reviewKeys: _sessionReviewKeys,
-        localXpGained: _queue.length * 15,
+        examBoostMultiplier: _examBoostMultiplier,
       );
+      _sessionReviewKeys.add('${card.cardId}:${_sessionReviewKeys.length}');
+
+      // If user rated Again on a previously reviewed card, offer Socratic AI remediation
+      if (rating == ReviewRating.again && mounted) {
+        await showModalBottomSheet<void>(
+          context: context,
+          isScrollControlled: true,
+          backgroundColor: Colors.transparent,
+          builder: (BuildContext context) => SocraticTutorSheet(
+            cardId: card.cardId,
+            cardFront: card.front,
+            cardBack: card.back,
+          ),
+        );
+      }
+
       if (!mounted) {
         return;
       }
-      setState(() {
-        _xpResult = xp;
-      });
-      return;
-    }
 
-    _flipController.reset();
-    setState(() {
-      _currentIndex++;
-      _isRevealed = false;
-      _cardShownAt = DateTime.now();
-    });
+      if (_currentIndex + 1 >= _queue.length) {
+        final SessionXpResult xp =
+            await locator.gamificationRepository.syncSessionXp(
+          userId: locator.activeUserId,
+          sessionId: _sessionId,
+          reviewKeys: _sessionReviewKeys,
+          localXpGained: _queue.length * 15,
+        );
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _xpResult = xp;
+        });
+        return;
+      }
+
+      _flipController.reset();
+      setState(() {
+        _currentIndex++;
+        _isRevealed = false;
+        _cardShownAt = DateTime.now();
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSubmitting = false;
+        });
+      }
+    }
   }
 
   @override
@@ -183,6 +196,14 @@ class _StudySessionScreenState extends State<StudySessionScreen>
           setState(() => _xpResult = null);
           _loadSession();
         },
+        onDashboard: () => context.go('/dashboard'),
+      );
+    }
+
+    if (_queue.isEmpty || _currentIndex >= _queue.length) {
+      return _EmptyQueueView(
+        onRefresh: _loadSession,
+        onExplore: () => context.go('/explore'),
         onDashboard: () => context.go('/dashboard'),
       );
     }
@@ -261,9 +282,14 @@ class _StudySessionScreenState extends State<StudySessionScreen>
 
           // 3D Perspective Flashcard Canvas
           Expanded(
-            child: GestureDetector(
-              onTap: _toggleFlip,
-              child: AnimatedBuilder(
+            child: Semantics(
+              button: true,
+              label: _isRevealed
+                  ? 'Virar cartao para a frente'
+                  : 'Virar cartao para o verso',
+              child: GestureDetector(
+                onTap: _toggleFlip,
+                child: AnimatedBuilder(
                 animation: _flipController,
                 builder: (BuildContext context, _) {
                   final double angle = _flipController.value * math.pi;
@@ -379,11 +405,15 @@ class _StudySessionScreenState extends State<StudySessionScreen>
 
           // Thumb-Zone FSRS-6 Rating Dock
           if (!_isRevealed)
-            CyberPrimaryButton(
-              label: 'Mostrar Resposta',
-              icon: Icons.flip_rounded,
-              fullWidth: true,
-              onPressed: _toggleFlip,
+            Semantics(
+              button: true,
+              label: 'Mostrar resposta do cartao',
+              child: CyberPrimaryButton(
+                label: 'Mostrar Resposta',
+                icon: Icons.flip_rounded,
+                fullWidth: true,
+                onPressed: _toggleFlip,
+              ),
             )
           else
             Row(
@@ -439,10 +469,13 @@ class _FsrsRatingButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Expanded(
-      child: InkWell(
-        borderRadius: BorderRadius.circular(18),
-        onTap: onTap,
-        child: Container(
+      child: Semantics(
+        button: true,
+        label: 'Avaliar como $label, proximo intervalo em $interval',
+        child: InkWell(
+          borderRadius: BorderRadius.circular(18),
+          onTap: onTap,
+          child: Container(
           padding: const EdgeInsets.symmetric(vertical: 14),
           decoration: BoxDecoration(
             color: color.withValues(alpha: 0.14),
@@ -473,7 +506,8 @@ class _FsrsRatingButton extends StatelessWidget {
           ),
         ),
       ),
-    );
+    ),
+  );
   }
 }
 
@@ -580,3 +614,86 @@ class _SessionCompletedView extends StatelessWidget {
     );
   }
 }
+
+class _EmptyQueueView extends StatelessWidget {
+  const _EmptyQueueView({
+    required this.onRefresh,
+    required this.onExplore,
+    required this.onDashboard,
+  });
+
+  final VoidCallback onRefresh;
+  final VoidCallback onExplore;
+  final VoidCallback onDashboard;
+
+  @override
+  Widget build(BuildContext context) {
+    final FlashiColorTokens colors = context.flashiColors;
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: GlassBentoCard(
+          accentBorderColor: colors.ratingGood,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: colors.ratingGood.withValues(alpha: 0.16),
+                ),
+                child: Icon(
+                  Icons.task_alt_rounded,
+                  size: 46,
+                  color: colors.ratingGood,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Fila Concluida!',
+                style: Theme.of(context).textTheme.headlineMedium,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Voce revisou todos os cartoes programados para agora. O algoritmo FSRS-6 recalculara os proximos vencimentos.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: colors.textSecondary),
+              ),
+              const SizedBox(height: 24),
+              CyberPrimaryButton(
+                label: 'Voltar ao Dashboard',
+                icon: Icons.dashboard_rounded,
+                fullWidth: true,
+                onPressed: onDashboard,
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size.fromHeight(48),
+                  side: BorderSide(color: colors.borderSpecular),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                ),
+                icon: Icon(Icons.explore_rounded, color: colors.accentCyan),
+                label: Text(
+                  'Explorar Baralhos Publicos',
+                  style: TextStyle(color: colors.textPrimary),
+                ),
+                onPressed: onExplore,
+              ),
+              const SizedBox(height: 8),
+              TextButton.icon(
+                icon: const Icon(Icons.refresh_rounded, size: 18),
+                label: const Text('Recarregar Fila'),
+                onPressed: onRefresh,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+

@@ -26,7 +26,7 @@ flowchart TB
 
     subgraph Domain["Camada de Domínio Puro (lib/domain/)"]
         Models["15 Modelos Imutáveis (Deck, Note, Flashcard, DueCard...)"]
-        Services["TemplateRenderer · NoteCardFieldsDeriver · ActivationStateMachine"]
+        Services["TemplateRenderer · NoteCardFieldsDeriver · ActivationStateMachine · FsrsSchedulerAdapter"]
     end
 
     subgraph Data["Camada de Dados Offline-First (lib/data/)"]
@@ -100,3 +100,6 @@ Converte um `NoteInput` em uma lista de `DerivedCardDefinition`:
 ### 3.3 [`ActivationStateMachine`](file:///Users/rafaelaparecido/projects/flashcards-flutter/lib/domain/services/activation_state_machine.dart)
 Máquina de estados finita que governa a jornada de ativação do novo usuário:
 `uninitialized` $\rightarrow$ `selectingGoal` $\rightarrow$ `provisioningStarterDeck` $\rightarrow$ `firstStudySession` (5 cartões iniciais) $\rightarrow$ `completed`.
+
+### 3.4 [`FsrsSchedulerAdapter`](file:///Users/rafaelaparecido/projects/flashcards-flutter/lib/domain/services/fsrs_scheduler_adapter.dart)
+Adaptador determinístico do motor FSRS-6 que encapsula a biblioteca `fsrs` e garante unificação matemática 1:1 entre a exibição prévia de intervalos na UI (`previewIntervals`) e a submissão de avaliações no repositório de estudo (`submitReview`). Hidrata campos da tabela `card_learning_state` (`stability`, `difficulty`, `reps`, `lapses`, `state`), computa fallbacks matemáticos na ausência de histórico e aplica compressão dinâmica de exames ($1.0 \le m \le 2.5$).

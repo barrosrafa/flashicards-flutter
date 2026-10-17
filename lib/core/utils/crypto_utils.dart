@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 import 'package:crypto/crypto.dart';
@@ -11,8 +12,15 @@ class CryptoUtils {
 
   static String randomUuid() => _uuid.v4();
 
+  static String generateUuidV4() => _uuid.v4();
+
   static String sha256Bytes(List<int> bytes) {
     return sha256.convert(bytes).toString();
+  }
+
+  static String computeNoteChecksum(String text) {
+    final String normalized = text.trim().replaceAll(RegExp(r'\s+'), ' ');
+    return sha256.convert(utf8.encode(normalized)).toString();
   }
 
   /// Calcula o SHA-256 de um arquivo em um Isolate separado para não bloquear

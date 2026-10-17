@@ -1,10 +1,7 @@
-import 'dart:math' as math;
-
-import 'package:fsrs/fsrs.dart' as fsrs_pkg;
-
 import '../../core/utils/crypto_utils.dart';
 import '../../domain/models/due_card.dart';
 import '../../domain/models/review_result.dart';
+import '../../domain/services/fsrs_scheduler_adapter.dart';
 import '../local/app_database.dart';
 import '../local/outbox_queue.dart';
 import '../remote/edge_function_client.dart';
@@ -23,15 +20,18 @@ class StudyRepository {
     OutboxQueue? outboxQueue,
     EdgeFunctionClient? edgeClient,
     SupabaseClientProvider? supabaseProvider,
+    FsrsSchedulerAdapter? fsrsScheduler,
   })  : _database = database ?? FlashiLocalDatabase.instance,
         _outboxQueue = outboxQueue ?? OutboxQueue(),
         _edgeClient = edgeClient ?? EdgeFunctionClient.instance,
-        _supabaseProvider = supabaseProvider ?? SupabaseClientProvider.instance;
+        _supabaseProvider = supabaseProvider ?? SupabaseClientProvider.instance,
+        _fsrsScheduler = fsrsScheduler ?? FsrsSchedulerAdapter();
 
   final FlashiLocalDatabase _database;
   final OutboxQueue _outboxQueue;
   final EdgeFunctionClient _edgeClient;
   final SupabaseClientProvider _supabaseProvider;
+  final FsrsSchedulerAdapter _fsrsScheduler;
 
   /// Fetches due cards for [userId] (optionally scoped to [deckId]).
   Future<List<DueCard>> getDueCards({
@@ -117,24 +117,16 @@ class StudyRepository {
     return const <DueCard>[];
   }
 
-  /// Previews the human-readable next intervals (`<10m`, `2d`, `5d`, `12d`) for the 4 FSRS ratings.
+  /// Previews the human-readable next intervals (`<10m`, `2d`, `5d`, `12d`) for the 4 FSRS ratings
+  /// using the exact same FSRS scheduler adapter used during submission.
   Map<ReviewRating, String> previewIntervals(
     DueCard card, {
     double examBoostMultiplier = 1.0,
   }) {
-    final Map<ReviewRating, int> daysByRating = <ReviewRating, int>{
-      ReviewRating.again: 0,
-      ReviewRating.hard: math.max(1, ((card.stability <= 0 ? 1 : card.stability * 1.2) / examBoostMultiplier).round()),
-      ReviewRating.good: math.max(1, ((card.stability <= 0 ? 3 : card.stability * 2.5) / examBoostMultiplier).round()),
-      ReviewRating.easy: math.max(2, ((card.stability <= 0 ? 7 : card.stability * 3.8) / examBoostMultiplier).round()),
-    };
-
-    return <ReviewRating, String>{
-      ReviewRating.again: '<10m',
-      ReviewRating.hard: '${daysByRating[ReviewRating.hard]}d',
-      ReviewRating.good: '${daysByRating[ReviewRating.good]}d',
-      ReviewRating.easy: '${daysByRating[ReviewRating.easy]}d',
-    };
+    return _fsrsScheduler.previewIntervals(
+      card,
+      examBoostMultiplier: examBoostMultiplier,
+    );
   }
 
   /// Submits a review for [card] using local FSRS scheduling + remote Edge Function / Outbox sync.
@@ -149,53 +141,25 @@ class StudyRepository {
     final String idempotencyKey = CryptoUtils.generateUuidV4();
     final DateTime now = DateTime.now().toUtc();
 
-    // Compute local FSRS-6 schedule via Dart fsrs package
-    final fsrs_pkg.Scheduler scheduler = fsrs_pkg.Scheduler();
-    final fsrs_pkg.Card fsrsCard = fsrs_pkg.Card(cardId: card.cardId.hashCode);
-    final fsrs_pkg.Rating mappedRating = switch (rating) {
-      ReviewRating.again => fsrs_pkg.Rating.again,
-      ReviewRating.hard => fsrs_pkg.Rating.hard,
-      ReviewRating.good => fsrs_pkg.Rating.good,
-      ReviewRating.easy => fsrs_pkg.Rating.easy,
-    };
-
-    final ({fsrs_pkg.Card card, fsrs_pkg.ReviewLog reviewLog}) scheduled =
-        scheduler.reviewCard(fsrsCard, mappedRating, reviewDateTime: now);
-
-    int scheduledDays = scheduled.card.due.difference(now).inDays;
-    if (examBoostMultiplier > 1.0 && scheduledDays > 1) {
-      scheduledDays = math.max(1, (scheduledDays / examBoostMultiplier).round());
-    }
-    final DateTime nextDue = rating == ReviewRating.again
-        ? now.add(const Duration(minutes: 10))
-        : now.add(Duration(days: math.max(1, scheduledDays)));
-
-    final String nextState = switch (rating) {
-      ReviewRating.again => card.reps == 0 ? 'learning' : 'relearning',
-      ReviewRating.hard => 'review',
-      ReviewRating.good => 'review',
-      ReviewRating.easy => 'review',
-    };
-    final double nextStability = scheduled.card.stability ??
-        (card.stability <= 0 ? rating.value * 1.5 : card.stability * 2.1);
-    final double nextDifficulty = scheduled.card.difficulty ??
-        (card.difficulty <= 0 ? 5.0 : card.difficulty);
-    final int nextReps = card.reps + 1;
-    final int nextLapses =
-        rating == ReviewRating.again ? card.lapses + 1 : card.lapses;
+    final ScheduledReviewSimulation sim = _fsrsScheduler.simulateReview(
+      card: card,
+      rating: rating,
+      now: now,
+      examBoostMultiplier: examBoostMultiplier,
+    );
 
     // 1. Update local learning state immediately (< 16ms)
     await _database.upsertRow('card_learning_state', <String, dynamic>{
       'user_id': userId,
       'card_id': card.cardId,
-      'state': nextState,
-      'due_date': nextDue.toIso8601String(),
-      'stability': nextStability,
-      'difficulty': nextDifficulty,
+      'state': sim.nextState,
+      'due_date': sim.nextDue.toIso8601String(),
+      'stability': sim.nextStability,
+      'difficulty': sim.nextDifficulty,
       'elapsed_days': 0,
-      'scheduled_days': math.max(0, scheduledDays),
-      'reps': nextReps,
-      'lapses': nextLapses,
+      'scheduled_days': sim.scheduledDays,
+      'reps': sim.nextReps,
+      'lapses': sim.nextLapses,
       'last_review': now.toIso8601String(),
       'updated_at': now.toIso8601String(),
     });
@@ -206,15 +170,13 @@ class StudyRepository {
       'card_id': card.cardId,
       'rating': rating.value,
       'state': card.state,
-      'scheduled_days': math.max(0, scheduledDays),
+      'scheduled_days': sim.scheduledDays,
       'review_duration_ms': durationMs,
-      'reviewed_at': now.toIso8601String(),
       'idempotency_key': idempotencyKey,
-      if (sessionId != null) 'session_id': sessionId,
+      'session_id': sessionId,
+      'reviewed_at': now.toIso8601String(),
     };
-    await _database.upsertRow('review_logs', reviewLogPayload);
 
-    // 2. Sync via Edge Function or enqueue to Outbox
     if (_supabaseProvider.isAvailable) {
       try {
         final Map<String, dynamic> remoteResult = await _edgeClient.invoke(
@@ -243,13 +205,13 @@ class StudyRepository {
     }
 
     return ReviewResponse(
-      state: nextState,
-      dueDate: nextDue.toIso8601String(),
-      intervalDays: math.max(0, scheduledDays),
-      stability: nextStability,
-      difficulty: nextDifficulty,
-      reps: nextReps,
-      lapses: nextLapses,
+      state: sim.nextState,
+      dueDate: sim.nextDue.toIso8601String(),
+      intervalDays: sim.scheduledDays.toDouble(),
+      stability: sim.nextStability,
+      difficulty: sim.nextDifficulty,
+      reps: sim.nextReps,
+      lapses: sim.nextLapses,
     );
   }
 }

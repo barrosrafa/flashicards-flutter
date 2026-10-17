@@ -128,7 +128,27 @@ class ExamRepository {
               'updated_at': nowIso,
             })
             .eq('id', examId);
-      } catch (_) {}
+      } catch (_) {
+        await _outboxQueue.enqueueMutation(
+          tableName: 'deck_exams',
+          action: 'update',
+          payload: <String, dynamic>{
+            'id': examId,
+            'status': ExamStatus.completed.value,
+            'updated_at': nowIso,
+          },
+        );
+      }
+    } else {
+      await _outboxQueue.enqueueMutation(
+        tableName: 'deck_exams',
+        action: 'update',
+        payload: <String, dynamic>{
+          'id': examId,
+          'status': ExamStatus.completed.value,
+          'updated_at': nowIso,
+        },
+      );
     }
   }
 }

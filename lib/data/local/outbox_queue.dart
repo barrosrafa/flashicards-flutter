@@ -7,6 +7,7 @@ import 'app_database.dart';
 /// Mirrors `src/lib/local/outbox.ts` from `app-flashi`:
 /// - Coalesces duplicate `review_logs` (by `idempotency_key`) and `rpc` calls (`sync_session_xp_confirmed` by `p_session_id`).
 /// - Defers `sync_session_xp_confirmed` while any `review_logs` mutation for the same `session_id` is still pending in the outbox.
+/// - Preserves retry count when network is unreachable to avoid dropping mutations while offline.
 class OutboxQueue extends ChangeNotifier {
   OutboxQueue({
     FlashiLocalDatabase? database,
@@ -15,13 +16,27 @@ class OutboxQueue extends ChangeNotifier {
   final FlashiLocalDatabase _database;
   bool _isProcessing = false;
   int _pendingCount = 0;
+  int _failedCount = 0;
   String? _lastError;
 
   bool get isProcessing => _isProcessing;
   int get pendingCount => _pendingCount;
+  int get failedCount => _failedCount;
   String? get lastError => _lastError;
 
   static const int maxRetries = 5;
+
+  static bool _isNetworkOfflineError(Object error) {
+    final String errStr = error.toString().toLowerCase();
+    return errStr.contains('socketexception') ||
+        errStr.contains('clientexception') ||
+        errStr.contains('timeoutexception') ||
+        errStr.contains('network is unreachable') ||
+        errStr.contains('connection refused') ||
+        errStr.contains('failed host lookup') ||
+        errStr.contains('offlinepersistenceexception') ||
+        errStr.contains('unauthenticatedexception');
+  }
 
   /// Enqueues an offline mutation with idempotency deduplication.
   Future<int> enqueueMutation({
@@ -85,6 +100,19 @@ class OutboxQueue extends ChangeNotifier {
     );
     await refreshCount();
     return insertedId;
+  }
+
+  /// Resets retry counts on all failed operations so they can be re-attempted.
+  Future<void> retryFailedOperations() async {
+    final List<Map<String, dynamic>> ops = await _database.getOutboxOperations();
+    for (final Map<String, dynamic> op in ops) {
+      final int retryCount = (op['retry_count'] as num?)?.toInt() ?? 0;
+      if (retryCount >= maxRetries) {
+        final int id = op['id'] as int;
+        await _database.updateOutboxOperation(id, retryCount: 0, lastError: null);
+      }
+    }
+    await refreshCount();
   }
 
   /// Processes all pending outbox items in FIFO order using [executor].
@@ -152,7 +180,6 @@ class OutboxQueue extends ChangeNotifier {
           if (tableName == 'review_logs') {
             final String? sid = payload['session_id']?.toString();
             if (sid != null) {
-              // Check if any other review_logs remain for this session
               final List<Map<String, dynamic>> remaining =
                   await _database.getOutboxOperations();
               final bool stillHasSessionReviews = remaining.any(
@@ -169,11 +196,19 @@ class OutboxQueue extends ChangeNotifier {
           }
         } catch (error) {
           _lastError = error.toString();
+          final bool isOffline = _isNetworkOfflineError(error);
+
+          // Only increment retryCount for real server/payload errors, never for offline state
           await _database.updateOutboxOperation(
             id,
-            retryCount: retryCount + 1,
+            retryCount: isOffline ? retryCount : retryCount + 1,
             lastError: error.toString(),
           );
+
+          // If offline, abort remaining queue processing for this cycle
+          if (isOffline) {
+            break;
+          }
         }
       }
     } finally {
@@ -186,6 +221,8 @@ class OutboxQueue extends ChangeNotifier {
     final List<Map<String, dynamic>> ops =
         await _database.getOutboxOperations();
     _pendingCount = ops.length;
+    _failedCount = ops.where((Map<String, dynamic> op) =>
+        ((op['retry_count'] as num?)?.toInt() ?? 0) >= maxRetries).length;
     notifyListeners();
   }
 }

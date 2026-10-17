@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -5,6 +6,18 @@ import '../../core/errors/app_exceptions.dart';
 import '../local/local_user_scope.dart';
 import '../local/offline_identity.dart';
 import '../remote/supabase_client_provider.dart';
+
+class SignUpOutcome {
+  const SignUpOutcome({
+    required this.user,
+    required this.session,
+    required this.requiresEmailConfirmation,
+  });
+
+  final User? user;
+  final Session? session;
+  final bool requiresEmailConfirmation;
+}
 
 /// Repository handling authentication, OAuth PKCE deep links, password recovery,
 /// and offline identity bootstrapping.
@@ -17,11 +30,14 @@ class AuthRepository extends ChangeNotifier {
     LocalUserScope? localUserScope,
   })  : _supabaseProvider = supabaseProvider ?? SupabaseClientProvider.instance,
         _offlineIdentityStore = offlineIdentityStore ?? OfflineIdentityStore(),
-        _localUserScope = localUserScope ?? LocalUserScope();
+        _localUserScope = localUserScope ?? LocalUserScope() {
+    _initAuthListener();
+  }
 
   final SupabaseClientProvider _supabaseProvider;
   final OfflineIdentityStore _offlineIdentityStore;
   final LocalUserScope _localUserScope;
+  StreamSubscription<AuthState>? _authSubscription;
 
   String? _userId;
   String? _userEmail;
@@ -31,6 +47,30 @@ class AuthRepository extends ChangeNotifier {
   String? get userEmail => _userEmail;
   bool get isAuthenticated => _userId != null && _userId!.isNotEmpty;
   bool get isDemoSession => _isDemoSession;
+
+  void _initAuthListener() {
+    final SupabaseClient? client = _supabaseProvider.client;
+    if (client != null) {
+      _authSubscription = client.auth.onAuthStateChange.listen((AuthState data) {
+        final Session? session = data.session;
+        if (session?.user != null) {
+          _userId = session!.user.id;
+          _userEmail = session.user.email ?? '';
+          _isDemoSession = false;
+          _localUserScope.ensureScope(_userId!);
+          _offlineIdentityStore.saveIdentity(
+            userId: _userId!,
+            email: _userEmail!,
+          );
+        } else if (data.event == AuthChangeEvent.signedOut) {
+          _userId = null;
+          _userEmail = null;
+          _isDemoSession = false;
+        }
+        notifyListeners();
+      });
+    }
+  }
 
   /// Restores active Supabase session or falls back to cached offline identity.
   Future<void> bootstrapSession() async {
@@ -76,7 +116,7 @@ class AuthRepository extends ChangeNotifier {
     );
     final User? user = response.user;
     if (user == null) {
-      throw const UnauthenticatedException('Credenciais invalidas.');
+      throw const UnauthenticatedException('Credenciais inválidas.');
     }
     _userId = user.id;
     _userEmail = user.email ?? email.trim();
@@ -90,7 +130,7 @@ class AuthRepository extends ChangeNotifier {
   }
 
   /// Registers a new user account with email, password, and display name.
-  Future<void> signUp({
+  Future<SignUpOutcome> signUp({
     required String email,
     required String password,
     String? displayName,
@@ -98,7 +138,11 @@ class AuthRepository extends ChangeNotifier {
     final SupabaseClient? client = _supabaseProvider.client;
     if (client == null) {
       await startDemoSession(email: email);
-      return;
+      return SignUpOutcome(
+        user: null,
+        session: null,
+        requiresEmailConfirmation: false,
+      );
     }
 
     final AuthResponse response = await client.auth.signUp(
@@ -110,6 +154,9 @@ class AuthRepository extends ChangeNotifier {
       },
     );
     final User? user = response.user;
+    final Session? session = response.session;
+    final bool requiresEmailConfirmation = session == null;
+
     if (user != null) {
       _userId = user.id;
       _userEmail = user.email ?? email.trim();
@@ -121,6 +168,12 @@ class AuthRepository extends ChangeNotifier {
       );
       notifyListeners();
     }
+
+    return SignUpOutcome(
+      user: user,
+      session: session,
+      requiresEmailConfirmation: requiresEmailConfirmation,
+    );
   }
 
   /// Initiates Google OAuth PKCE flow with native deep link callback `io.flashi.app://auth-callback`.
@@ -135,6 +188,26 @@ class AuthRepository extends ChangeNotifier {
       OAuthProvider.google,
       redirectTo: 'io.flashi.app://auth-callback',
     );
+  }
+
+  /// Exchanges OAuth or recovery code/hash in deep link for active session.
+  Future<void> exchangeCodeForSession(Uri uri) async {
+    final SupabaseClient? client = _supabaseProvider.client;
+    if (client != null) {
+      await client.auth.getSessionFromUrl(uri);
+      final User? user = client.auth.currentUser;
+      if (user != null) {
+        _userId = user.id;
+        _userEmail = user.email ?? '';
+        _isDemoSession = false;
+        await _localUserScope.ensureScope(_userId!);
+        await _offlineIdentityStore.saveIdentity(
+          userId: _userId!,
+          email: _userEmail!,
+        );
+        notifyListeners();
+      }
+    }
   }
 
   /// Sends password recovery link to [email].
@@ -158,7 +231,7 @@ class AuthRepository extends ChangeNotifier {
     await client.auth.updateUser(UserAttributes(password: newPassword));
   }
 
-  /// Starts a local offline/demo session so users can test all features immediately.
+  /// Starts a local offline/demo session explicitly when chosen by user.
   Future<void> startDemoSession({String email = 'demo@flashi.app'}) async {
     _userId = 'demo-user-id';
     _userEmail = email.trim().isEmpty ? 'demo@flashi.app' : email.trim();
@@ -185,5 +258,11 @@ class AuthRepository extends ChangeNotifier {
     await _offlineIdentityStore.clearIdentity();
     await _localUserScope.clearScope();
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _authSubscription?.cancel();
+    super.dispose();
   }
 }

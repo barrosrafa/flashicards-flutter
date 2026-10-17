@@ -9,8 +9,10 @@ Future<void> main() async {
 
   final ServiceLocator locator = ServiceLocator.instance;
   await locator.supabaseProvider.initialize();
+  await AppLocalizations.instance.initialize();
   await locator.themeController.loadSavedPreferences();
   await locator.authRepository.bootstrapSession();
+  await locator.outboxQueue.refreshCount();
 
   await ObservabilityService.instance.runGuarded(() async {
     runApp(const FlashiApp());

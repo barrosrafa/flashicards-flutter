@@ -90,4 +90,66 @@ class Validators {
     }
     return uri;
   }
+
+  static final RegExp _emailRegex = RegExp(
+    r'^[^\s@]+@[^\s@]+\.[^\s@]+$',
+  );
+
+  static String? validateRequired(
+    String? value, {
+    String fieldName = 'Campo',
+    int minLength = 1,
+    int maxLength = 5000,
+  }) {
+    final String trimmed = (value ?? '').trim();
+    if (trimmed.isEmpty) {
+      return '$fieldName é obrigatório.';
+    }
+    if (trimmed.length < minLength) {
+      return '$fieldName deve ter pelo menos $minLength caracteres.';
+    }
+    if (trimmed.length > maxLength) {
+      return '$fieldName excede o limite de $maxLength caracteres.';
+    }
+    return null;
+  }
+
+  static String? validateEmail(String? value) {
+    final String trimmed = (value ?? '').trim();
+    if (trimmed.isEmpty) {
+      return 'Informe seu e-mail.';
+    }
+    if (!_emailRegex.hasMatch(trimmed)) {
+      return 'Informe um endereço de e-mail válido.';
+    }
+    return null;
+  }
+
+  static String? validatePassword(String? value, {int minLength = 8}) {
+    final String raw = value ?? '';
+    if (raw.isEmpty) {
+      return 'Informe sua senha.';
+    }
+    if (raw.length < minLength) {
+      return 'A senha deve ter pelo menos $minLength caracteres.';
+    }
+    return null;
+  }
+
+  static String? validateIntRange(
+    String? value, {
+    required String fieldName,
+    required int min,
+    required int max,
+  }) {
+    final String trimmed = (value ?? '').trim();
+    final int? parsed = int.tryParse(trimmed);
+    if (parsed == null) {
+      return '$fieldName deve ser um número inteiro.';
+    }
+    if (parsed < min || parsed > max) {
+      return '$fieldName deve estar entre $min e $max.';
+    }
+    return null;
+  }
 }

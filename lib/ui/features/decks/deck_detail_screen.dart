@@ -254,6 +254,87 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
     );
   }
 
+  Future<void> _showEditCardModal(Flashcard card) async {
+    final TextEditingController frontCtrl =
+        TextEditingController(text: card.front);
+    final TextEditingController backCtrl =
+        TextEditingController(text: card.back);
+    final TextEditingController extraCtrl =
+        TextEditingController(text: card.extra ?? '');
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (BuildContext modalContext) {
+        final FlashiColorTokens colors = modalContext.flashiColors;
+        return Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(modalContext).viewInsets.bottom,
+          ),
+          child: Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: colors.bgElevated,
+              borderRadius:
+                  const BorderRadius.vertical(top: Radius.circular(28)),
+              border: Border.all(color: colors.borderSpecular),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                Text(
+                  'Editar Cartao',
+                  style: Theme.of(modalContext).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 12),
+                FuturisticFormField(
+                  label: 'Frente',
+                  controller: frontCtrl,
+                  maxLines: 2,
+                ),
+                const SizedBox(height: 12),
+                FuturisticFormField(
+                  label: 'Verso',
+                  controller: backCtrl,
+                  maxLines: 2,
+                ),
+                const SizedBox(height: 12),
+                FuturisticFormField(
+                  label: 'Notas Extras (opcional)',
+                  controller: extraCtrl,
+                ),
+                const SizedBox(height: 16),
+                CyberPrimaryButton(
+                  label: 'Salvar Alteracoes',
+                  icon: Icons.save_rounded,
+                  fullWidth: true,
+                  onPressed: () async {
+                    if (frontCtrl.text.trim().isEmpty) return;
+                    final Flashcard updated = card.copyWith(
+                      front: frontCtrl.text.trim(),
+                      back: backCtrl.text.trim(),
+                      extra: extraCtrl.text.trim().isNotEmpty
+                          ? extraCtrl.text.trim()
+                          : null,
+                    );
+                    await ServiceLocator.instance.cardRepository
+                        .updateCard(updated);
+                    if (modalContext.mounted) {
+                      Navigator.of(modalContext).pop();
+                    }
+                    await _loadDeckDetails();
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final FlashiColorTokens colors = context.flashiColors;
@@ -403,10 +484,20 @@ class _DeckDetailScreenState extends State<DeckDetailScreen> {
                     ),
                     IconButton(
                       icon: Icon(
+                        Icons.edit_outlined,
+                        size: 20,
+                        color: colors.textMuted,
+                      ),
+                      tooltip: 'Editar cartao',
+                      onPressed: () => _showEditCardModal(card),
+                    ),
+                    IconButton(
+                      icon: Icon(
                         Icons.delete_outline_rounded,
                         size: 20,
                         color: colors.textMuted,
                       ),
+                      tooltip: 'Excluir cartao',
                       onPressed: () async {
                         await ServiceLocator.instance.cardRepository
                             .deleteCard(card.id);

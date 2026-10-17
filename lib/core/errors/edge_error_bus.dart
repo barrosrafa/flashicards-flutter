@@ -35,6 +35,10 @@ class EdgeErrorBus extends ChangeNotifier {
     notifyListeners();
   }
 
+  void reportException(Object error, {String? endpoint}) {
+    emit(error);
+  }
+
   void clear() {
     _latestError = null;
     _activeRateLimit = null;
@@ -46,6 +50,11 @@ class EdgeErrorBus extends ChangeNotifier {
   void dismissError() {
     _latestError = null;
     notifyListeners();
+  }
+
+  void dismissLatest() {
+    dismissError();
+    clear();
   }
 
   void _startRateLimitCountdown() {

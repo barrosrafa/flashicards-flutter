@@ -37,3 +37,15 @@ Bem-vindo à documentação de engenharia do **Flashi Mobile (Flutter)** — a c
    - Uso do script automatizado [`scripts/build_ipa.sh`](../scripts/build_ipa.sh)
    - Assinatura Apple Distribution (App Store / TestFlight), Ad-Hoc e Sideload sem conta paga (`--no-codesign`)
    - Geração de `.apk` (`--split-per-abi`) e `.aab` com R8/ProGuard e CI/CD no GitHub Actions.
+
+7. [**07. Relatório de Remediação QA, Gaps Funcionais e Changelog Técnico**](./07_REMEDIACAO_QA_E_CHANGELOG.md)
+   - Matriz de resolução dos 39 apontamentos de QA (`QA-01` a `QA-39`)
+   - Fechamento dos 16 Gaps Funcionais de produto e UX
+   - Homologação da matriz `E2E-01` a `E2E-32`
+   - Inventário completo de arquivos criados e modificados
+
+8. [**Manual do Usuário — Flashi Mobile**](./MANUAL_DO_USUARIO.md)
+   - Guia prático de telas e fluxos de navegação (T01 a T23)
+   - Conceitos essenciais de estudo, FSRS-6, oclusão e importação
+   - Rastreabilidade de rotas e comportamentos esperados
+

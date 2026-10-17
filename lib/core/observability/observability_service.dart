@@ -14,6 +14,35 @@ class ObservabilityService {
 
   static final ObservabilityService instance = ObservabilityService._();
 
+  /// Executa [appRunner] protegido por Sentry/FlutterError/PlatformDispatcher best-effort.
+  Future<void> runGuarded(Future<void> Function() appRunner) async {
+    FlutterError.onError = (FlutterErrorDetails details) {
+      FlutterError.presentError(details);
+      captureException(details.exception, stackTrace: details.stack);
+    };
+    WidgetsBinding.instance.platformDispatcher.onError =
+        (Object error, StackTrace stack) {
+      captureException(error, stackTrace: stack);
+      return true;
+    };
+
+    if (EnvConfig.sentryDsn.isNotEmpty) {
+      try {
+        await SentryFlutter.init(
+          (SentryFlutterOptions options) {
+            options.dsn = EnvConfig.sentryDsn;
+            options.tracesSampleRate = 0.2;
+          },
+          appRunner: appRunner,
+        );
+        return;
+      } catch (_) {
+        // Fallback se inicialização do Sentry falhar
+      }
+    }
+    await appRunner();
+  }
+
   Future<void> capture(
     String eventName, [
     Map<String, dynamic> properties = const {},
